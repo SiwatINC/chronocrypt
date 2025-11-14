@@ -1,5 +1,5 @@
 {
-  "name": "chronocrypt",
+  "name": "@siwats/chronocrypt",
   "version": "1.0.0",
   "description": "Time-Based Granular Data Encryption System - A cryptographic library for temporal data access control",
   "type": "module",
@@ -28,7 +28,7 @@
     "granular-encryption",
     "zero-knowledge"
   ],
-  "author": "",
+  "author": "Siwat Sirichai",
   "license": "MIT",
   "devDependencies": {
     "@types/bun": "latest",

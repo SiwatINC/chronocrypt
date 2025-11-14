@@ -18,6 +18,12 @@ A cryptographic library for temporal data access control with zero-knowledge aut
 - **Flexible Policy System**: Extensible access control policies
 - **Comprehensive Audit Logging**: Full audit trail of all access authorization activities
 
+## Installation
+
+```bash
+bun add @siwats/chronocrypt
+```
+
 ## Quick Start
 
 ```typescript
@@ -29,7 +35,7 @@ import {
   InMemoryEncryptedRepository,
   InMemoryAuditLog,
   createAllowAllPolicy
-} from 'chronocrypt';
+} from '@siwats/chronocrypt';
 
 // Setup: Create master key and storage
 const masterKey = generateMasterKey();
