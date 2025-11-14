@@ -1,38 +1,27 @@
 /**
- * ChronoCrypt - Time-Based Granular Data Encryption System
- *
- * A cryptographic library for temporal data access control with zero-knowledge authorization
- *
- * @packageDocumentation
+ * ChronoCrypt - Asymmetric Time-Based Granular Data Encryption System
  */
 
-// Export all type definitions
-export * from './types';
+// Export all types
+export * from './types/index';
 
-// Export cryptographic primitives
+// Export key management
 export {
-  generateMasterKey,
-  validateMasterKey,
-  deriveTimeSpecificKey,
-  deriveMultipleKeys,
-  destroyKey,
-  importMasterKeyFromHex,
-  exportMasterKeyToHex,
-  importMasterKeyFromBase64,
-  exportMasterKeyToBase64,
-  MASTER_KEY_SIZE,
-  DERIVED_KEY_SIZE
+  generateMasterKeypair,
+  exportPublicKey,
+  importPublicKey,
+  deriveTimeSpecificPrivateKey,
+  deriveMultiplePrivateKeys,
+  exportMasterKeypair,
+  importMasterKeypair
 } from './crypto/key-derivation';
 
+// Export encryption
 export {
   encryptData,
   decryptData,
-  verifyAuthentication,
-  generateIV,
   serializeEncryptedPackage,
-  deserializeEncryptedPackage,
-  IV_SIZE,
-  AUTH_TAG_SIZE
+  deserializeEncryptedPackage
 } from './crypto/encryption';
 
 // Export entities
@@ -40,33 +29,9 @@ export { DataSource, createDataSource } from './entities/data-source';
 export { KeyHolder, createKeyHolder } from './entities/key-holder';
 export { DataViewer, createDataViewer } from './entities/data-viewer';
 
-// Export storage implementations
-export {
-  InMemoryEncryptedRepository,
-  FileSystemEncryptedRepository
-} from './storage/encrypted-repository';
+// Export storage
+export { InMemoryEncryptedRepository } from './storage/encrypted-repository';
+export { InMemoryAuditLog } from './storage/audit-log';
 
-export {
-  InMemoryAuditLog,
-  FileBasedAuditLog,
-  generateAuditEntryId,
-  createAuditEntry
-} from './storage/audit-log';
-
-// Export access control policies
-export {
-  AccessControlPolicyManager,
-  createAllowAllPolicy,
-  createDenyAllPolicy,
-  createRequesterWhitelistPolicy,
-  createMaxDurationPolicy,
-  createPastOnlyPolicy,
-  createTimeWindowPolicy,
-  createRateLimitPolicy,
-  createPurposeRequiredPolicy,
-  createBusinessHoursPolicy,
-  createCompositeAndPolicy,
-  createCompositeOrPolicy
-} from './policies/access-control';
-
-export type { PolicyEvaluationResult } from './policies/access-control';
+// Export policies
+export { createAllowAllPolicy } from './policies/access-control';
