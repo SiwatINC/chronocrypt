@@ -3,12 +3,12 @@
  *
  * Uses ECIES (Elliptic Curve Integrated Encryption Scheme) + AES-256-GCM
  * - Generate ephemeral EC keypair
- * - Derive shared secret via ECDH with time-derived public key
- * - Use shared secret to encrypt symmetric key
+ * - Derive shared secret via ECDH with recipient's public key
+ * - Use shared secret to encrypt symmetric key (key wrapping)
  * - Encrypt data with AES-256-GCM using symmetric key
  */
 
-import { importPublicKey, deriveTimeSpecificPrivateKey } from './key-derivation';
+import { importPublicKey } from './key-derivation';
 import {
   ExportedPublicKey,
   TimeSpecificPrivateKey,
@@ -41,7 +41,7 @@ function generateIV(): Uint8Array {
  * 2. Encrypt data with AES-256-GCM using K
  * 3. Generate ephemeral ECDH keypair
  * 4. Derive shared secret with recipient's public key
- * 5. Encrypt K using shared secret
+ * 5. Wrap (encrypt) K using shared secret
  *
  * @param data - Data to encrypt
  * @param recipientPublicKey - Recipient's master public key (JWK format)
@@ -64,18 +64,18 @@ export async function encryptData(
     );
 
     // 2. Encrypt data with AES-GCM
-    const iv = generateIV();
+    const dataIv = generateIV();
     const encryptedData = await crypto.subtle.encrypt(
       {
         name: 'AES-GCM',
-        iv: iv as BufferSource,
+        iv: dataIv as BufferSource,
         tagLength: AES_TAG_LENGTH
       },
       symmetricKey,
       data as BufferSource
     );
 
-    // Extract data and auth tag (GCM includes tag in output)
+    // Extract ciphertext and auth tag (GCM includes tag in output)
     const encryptedBytes = new Uint8Array(encryptedData);
     const tagStart = encryptedBytes.length - (AES_TAG_LENGTH / 8);
     const ciphertext = encryptedBytes.slice(0, tagStart);
@@ -85,20 +85,50 @@ export async function encryptData(
     const ephemeralKeypair = await crypto.subtle.generateKey(
       { name: 'ECDH', namedCurve: 'P-256' },
       true,
-      ['deriveKey']
+      ['deriveKey', 'deriveBits']
     );
 
     // 4. Import recipient public key and derive shared secret
     const recipientKey = await importPublicKey(recipientPublicKey);
 
-    // Derive encryption key from ECDH shared secret
-    const sharedKey = await crypto.subtle.deriveKey(
+    // Derive ECDH shared secret as raw bits
+    const ecdhSharedSecret = await crypto.subtle.deriveBits(
       {
         name: 'ECDH',
         public: recipientKey
       },
       ephemeralKeypair.privateKey,
-      { name: 'AES-GCM', length: 256 },
+      256 // 256 bits
+    );
+
+    // Incorporate timestamp into KDF for temporal binding
+    // Derive wrapping key: HKDF(ecdh_secret, salt=timestamp)
+    const timestampBytes = new Uint8Array(8);
+    new DataView(timestampBytes.buffer).setBigUint64(0, BigInt(timestamp), false);
+
+    // Combine ECDH secret with timestamp for HKDF
+    const ikm = new Uint8Array(ecdhSharedSecret);
+    const info = new TextEncoder().encode('ChronoCrypt-Wrap-v1');
+
+    // Import secret for HKDF
+    const baseKey = await crypto.subtle.importKey(
+      'raw',
+      ikm,
+      { name: 'HKDF' },
+      false,
+      ['deriveKey']
+    );
+
+    // Derive time-bound wrapping key using HKDF with timestamp as salt
+    const wrapKey = await crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: timestampBytes,
+        info: info
+      },
+      baseKey,
+      { name: 'AES-KW', length: 256 },
       false,
       ['wrapKey']
     );
@@ -107,11 +137,8 @@ export async function encryptData(
     const wrappedKey = await crypto.subtle.wrapKey(
       'raw',
       symmetricKey,
-      sharedKey,
-      {
-        name: 'AES-GCM',
-        iv: generateIV() // Separate IV for key wrapping
-      }
+      wrapKey,
+      { name: 'AES-KW' }
     );
 
     // Export ephemeral public key for decryption
@@ -122,7 +149,7 @@ export async function encryptData(
       encryptedKey: new Uint8Array(wrappedKey),
       ephemeralPublicKey: ephemeralPublicJwk,
       encryptedData: ciphertext,
-      iv: iv,
+      iv: dataIv,
       authTag: authTag,
       metadata
     };
@@ -159,28 +186,52 @@ export async function decryptData(
       []
     );
 
-    // 2. Derive shared secret using time-specific private key
-    const sharedKey = await crypto.subtle.deriveKey(
+    // 2. Derive ECDH shared secret as raw bits
+    const ecdhSharedSecret = await crypto.subtle.deriveBits(
       {
         name: 'ECDH',
         public: ephemeralPublicKey
       },
       timeSpecificPrivateKey,
-      { name: 'AES-GCM', length: 256 },
+      256
+    );
+
+    // 3. Incorporate timestamp into KDF (same as encryption)
+    const timestampBytes = new Uint8Array(8);
+    new DataView(timestampBytes.buffer).setBigUint64(0, BigInt(pkg.timestamp), false);
+
+    const ikm = new Uint8Array(ecdhSharedSecret);
+    const info = new TextEncoder().encode('ChronoCrypt-Wrap-v1');
+
+    // Import secret for HKDF
+    const baseKey = await crypto.subtle.importKey(
+      'raw',
+      ikm,
+      { name: 'HKDF' },
+      false,
+      ['deriveKey']
+    );
+
+    // Derive time-bound unwrapping key using HKDF with timestamp as salt
+    const unwrapKey = await crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: timestampBytes,
+        info: info
+      },
+      baseKey,
+      { name: 'AES-KW', length: 256 },
       false,
       ['unwrapKey']
     );
 
-    // 3. Extract IV from wrapped key (first 12 bytes)
-    const wrapIV = pkg.encryptedKey.slice(0, AES_IV_LENGTH);
-    const wrappedKeyData = pkg.encryptedKey.slice(AES_IV_LENGTH);
-
     // 4. Unwrap (decrypt) the symmetric key
     const symmetricKey = await crypto.subtle.unwrapKey(
       'raw',
-      wrappedKeyData as BufferSource,
-      sharedKey,
-      { name: 'AES-GCM', iv: wrapIV as BufferSource },
+      pkg.encryptedKey as BufferSource,
+      unwrapKey,
+      { name: 'AES-KW' },
       { name: 'AES-GCM', length: AES_KEY_LENGTH },
       false,
       ['decrypt']
@@ -205,7 +256,11 @@ export async function decryptData(
     return new Uint8Array(decryptedData);
   } catch (error) {
     // GCM authentication failure
-    if (error instanceof Error && error.message.includes('authentication')) {
+    // Web Crypto throws "operation failed" for GCM auth failures
+    if (error instanceof Error &&
+        (error.message.includes('authentication') ||
+         error.message.includes('operation failed') ||
+         error.name === 'OperationError')) {
       throw new AuthenticationError('Data authentication failed - data may be tampered');
     }
     throw new DecryptionError(

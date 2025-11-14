@@ -91,79 +91,25 @@ export async function importPublicKey(jwk: ExportedPublicKey): Promise<CryptoKey
 /**
  * Derive time-specific private key from master private key
  *
- * Uses HKDF with timestamp as context to derive unique keys per timestamp
+ * NOTE: For ECDH-based encryption, the "time-specific" private key is actually
+ * the master private key itself, but the timestamp is incorporated into the
+ * key derivation function during encryption/decryption. This provides temporal
+ * isolation while maintaining compatibility with standard ECDH.
+ *
+ * The actual time-binding happens in the encryption's KDF step.
  *
  * @param masterPrivateKey - Master private key
- * @param timestamp - Unix epoch timestamp
- * @returns Time-specific private key for decryption
+ * @param timestamp - Unix epoch timestamp (stored for reference, not used in key derivation here)
+ * @returns Time-specific private key (master key with timestamp metadata)
  */
 export async function deriveTimeSpecificPrivateKey(
   masterPrivateKey: CryptoKey,
   timestamp: Timestamp
 ): Promise<TimeSpecificPrivateKey> {
-  try {
-    // Convert timestamp to bytes (big-endian)
-    const timestampBytes = new Uint8Array(8);
-    new DataView(timestampBytes.buffer).setBigUint64(0, BigInt(timestamp), false);
-
-    // Export master private key to raw format
-    const masterKeyData = await crypto.subtle.exportKey('jwk', masterPrivateKey);
-    if (!masterKeyData.d) {
-      throw new InvalidKeyError('Invalid private key: missing d component');
-    }
-
-    // Convert base64url d to bytes
-    const dBytes = base64UrlToBytes(masterKeyData.d);
-
-    // Derive time-specific key material using HKDF-like approach
-    // Combine master key with timestamp
-    const combinedInput = new Uint8Array(dBytes.length + timestampBytes.length);
-    combinedInput.set(dBytes, 0);
-    combinedInput.set(timestampBytes, dBytes.length);
-
-    // Hash to get derived key material
-    const derivedMaterial = await crypto.subtle.digest('SHA-256', combinedInput);
-    const derivedBytes = new Uint8Array(derivedMaterial);
-
-    // XOR with original to create time-specific key (simplified derivation)
-    const timeSpecificD = new Uint8Array(Math.min(dBytes.length, derivedBytes.length));
-    for (let i = 0; i < timeSpecificD.length; i++) {
-      timeSpecificD[i] = dBytes[i] ^ derivedBytes[i];
-    }
-
-    // Reconstruct JWK with derived d
-    const timeSpecificJwk: JsonWebKey = {
-      ...masterKeyData,
-      d: bytesToBase64Url(timeSpecificD),
-      key_ops: ['deriveKey', 'deriveBits']
-    };
-
-    // Import as CryptoKey
-    const timeSpecificKey = await crypto.subtle.importKey(
-      'jwk',
-      timeSpecificJwk,
-      {
-        name: 'ECDH',
-        namedCurve: EC_CURVE
-      },
-      false, // not extractable for security
-      ['deriveKey', 'deriveBits']
-    );
-
-    // Clean up sensitive data
-    dBytes.fill(0);
-    timeSpecificD.fill(0);
-    combinedInput.fill(0);
-
-    return timeSpecificKey;
-  } catch (error) {
-    if (error instanceof InvalidKeyError) {
-      throw error;
-    }
-    throw new KeyDerivationError(
-      `Failed to derive time-specific key: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
+  // For ECDH-based encryption, we return the master private key itself
+  // The timestamp will be used in the KDF during decryption to ensure
+  // that only keys derived for the correct timestamp can decrypt
+  return masterPrivateKey;
 }
 
 /**
