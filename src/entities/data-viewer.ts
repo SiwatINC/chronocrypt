@@ -1,43 +1,38 @@
 /**
- * Data Viewer Entity
+ * Data Viewer Entity - Authorized Decryption
  *
- * Decrypts authorized data using time-specific keys received from key holder entities
+ * Decrypts authorized data using time-specific private keys from KeyHolder
  */
 
-import { decryptData, verifyAuthentication } from '../crypto/encryption';
-import { destroyKey } from '../crypto/key-derivation';
-import { createAuditEntry } from '../storage/audit-log';
+import { decryptData } from '../crypto/encryption';
 import {
   DataViewerConfig,
   EncryptedPackage,
   EncryptedDataRepository,
   DecryptedData,
-  TimeSpecificKey,
+  TimeSpecificPrivateKey,
   Timestamp,
   TimeRange,
   AuditLogStorage,
-  DecryptionError,
-  AuthenticationError
-} from '../types';
+  DecryptionError
+} from '../types/index';
 
 /**
- * Data Viewer Entity - Primary Function: Decrypts authorized data
+ * Data Viewer Entity - Decrypts authorized data
  *
  * Core Responsibilities:
- * - Receive and securely store time-specific decryption keys
- * - Retrieve encrypted data from data source repositories
- * - Perform authenticated decryption of authorized temporal data
- * - Implement secure key lifecycle management including key destruction
+ * - Receive time-specific private keys from KeyHolder
+ * - Retrieve encrypted data from repository
+ * - Perform authenticated decryption
+ * - Manage secure key lifecycle
  *
  * Operational Constraints:
- * - Must only attempt decryption of data for which valid keys exist
- * - Must verify data authenticity before processing decrypted content
- * - Must implement secure key storage and destruction procedures
- * - Must respect temporal boundaries defined by available decryption keys
+ * - Can only decrypt data for which valid private keys exist
+ * - Must respect temporal boundaries defined by available keys
  */
 export class DataViewer {
   private viewerId: string;
-  private authorizedKeys: Map<Timestamp, TimeSpecificKey>;
+  private authorizedKeys: Map<Timestamp, TimeSpecificPrivateKey>;
   private auditLog?: AuditLogStorage;
 
   constructor(config: DataViewerConfig, auditLog?: AuditLogStorage) {
@@ -47,23 +42,23 @@ export class DataViewer {
   }
 
   /**
-   * Load authorized keys received from key holder
+   * Load authorized private keys received from key holder
    *
-   * @param keys - Map of timestamp to time-specific keys
+   * @param keys - Map of timestamp to time-specific private keys
    */
-  loadAuthorizedKeys(keys: Map<Timestamp, TimeSpecificKey>): void {
+  loadAuthorizedKeys(keys: Map<Timestamp, TimeSpecificPrivateKey>): void {
     for (const [timestamp, key] of keys) {
       this.authorizedKeys.set(timestamp, key);
     }
   }
 
   /**
-   * Add a single authorized key
+   * Add a single authorized private key
    *
    * @param timestamp - Timestamp for the key
-   * @param key - Time-specific decryption key
+   * @param key - Time-specific private key
    */
-  addAuthorizedKey(timestamp: Timestamp, key: TimeSpecificKey): void {
+  addAuthorizedKey(timestamp: Timestamp, key: TimeSpecificPrivateKey): void {
     this.authorizedKeys.set(timestamp, key);
   }
 
@@ -89,31 +84,27 @@ export class DataViewer {
   /**
    * Decrypt a single encrypted package
    *
-   * Workflow:
-   * 1. Key Validation: Verify possession of valid decryption key for target timestamp
-   * 2. Data Retrieval: Obtain encrypted data payload from data source repository
-   * 3. Authentication Verification: Validate data integrity using authentication information
-   * 4. Decryption: Apply decryption operation using time-specific key
-   *
    * @param pkg - Encrypted package to decrypt
    * @returns Decrypted data
    * @throws {DecryptionError} If decryption key is not available
-   * @throws {AuthenticationError} If authentication verification fails
    */
   async decryptPackage(pkg: EncryptedPackage): Promise<DecryptedData> {
-    // Step 1: Verify we have the key
-    const key = this.authorizedKeys.get(pkg.timestamp);
+    // Verify we have the private key for this timestamp
+    const privateKey = this.authorizedKeys.get(pkg.timestamp);
 
-    if (!key) {
+    if (!privateKey) {
       if (this.auditLog) {
-        await this.auditLog.append(
-          createAuditEntry('DECRYPTION_ATTEMPT', this.viewerId, false, {
-            details: {
-              timestamp: pkg.timestamp,
-              reason: 'No authorized key for timestamp'
-            }
-          })
-        );
+        await this.auditLog.append({
+          id: this.generateAuditId(),
+          timestamp: Date.now(),
+          eventType: 'DECRYPTION_ATTEMPT',
+          actor: this.viewerId,
+          success: false,
+          details: {
+            timestamp: pkg.timestamp,
+            reason: 'No authorized key for timestamp'
+          }
+        });
       }
 
       throw new DecryptionError(
@@ -122,19 +113,22 @@ export class DataViewer {
     }
 
     try {
-      // Step 2 & 3: Decrypt (includes authentication verification)
-      const decryptedData = await decryptData(pkg, key);
+      // Decrypt using time-specific private key
+      const decryptedData = await decryptData(pkg, privateKey);
 
       // Log successful decryption
       if (this.auditLog) {
-        await this.auditLog.append(
-          createAuditEntry('DECRYPTION_ATTEMPT', this.viewerId, true, {
-            details: {
-              timestamp: pkg.timestamp,
-              dataSize: decryptedData.length
-            }
-          })
-        );
+        await this.auditLog.append({
+          id: this.generateAuditId(),
+          timestamp: Date.now(),
+          eventType: 'DECRYPTION_ATTEMPT',
+          actor: this.viewerId,
+          success: true,
+          details: {
+            timestamp: pkg.timestamp,
+            dataSize: decryptedData.length
+          }
+        });
       }
 
       return {
@@ -144,14 +138,17 @@ export class DataViewer {
       };
     } catch (error) {
       if (this.auditLog) {
-        await this.auditLog.append(
-          createAuditEntry('DECRYPTION_ATTEMPT', this.viewerId, false, {
-            details: {
-              timestamp: pkg.timestamp,
-              error: error instanceof Error ? error.message : String(error)
-            }
-          })
-        );
+        await this.auditLog.append({
+          id: this.generateAuditId(),
+          timestamp: Date.now(),
+          eventType: 'DECRYPTION_ATTEMPT',
+          actor: this.viewerId,
+          success: false,
+          details: {
+            timestamp: pkg.timestamp,
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
       }
 
       throw error;
@@ -159,7 +156,7 @@ export class DataViewer {
   }
 
   /**
-   * Decrypt data from a repository for a specific timestamp
+   * Decrypt data from repository for specific timestamp
    *
    * @param repository - Encrypted data repository
    * @param timestamp - Timestamp to decrypt
@@ -179,11 +176,11 @@ export class DataViewer {
   }
 
   /**
-   * Decrypt multiple packages from a repository within a time range
+   * Decrypt multiple packages from repository within time range
    *
    * @param repository - Encrypted data repository
    * @param range - Time range to decrypt
-   * @returns Array of decrypted data (only includes successfully decrypted items)
+   * @returns Array of decrypted data (only successfully decrypted items)
    */
   async decryptRange(
     repository: EncryptedDataRepository,
@@ -197,8 +194,7 @@ export class DataViewer {
         const data = await this.decryptPackage(pkg);
         decrypted.push(data);
       } catch (error) {
-        // Skip packages we can't decrypt (no key or authentication failed)
-        // Errors are already logged in decryptPackage
+        // Skip packages we can't decrypt (logged in decryptPackage)
         continue;
       }
     }
@@ -207,66 +203,23 @@ export class DataViewer {
   }
 
   /**
-   * Verify authentication of encrypted package without decrypting
-   *
-   * Useful for checking data integrity without accessing the content
-   *
-   * @param pkg - Encrypted package to verify
-   * @returns True if authentication is valid
+   * Clear all authorized keys (for security when done)
    */
-  async verifyPackageAuthentication(pkg: EncryptedPackage): Promise<boolean> {
-    const key = this.authorizedKeys.get(pkg.timestamp);
-
-    if (!key) {
-      return false;
-    }
-
-    return await verifyAuthentication(pkg, key);
-  }
-
-  /**
-   * Destroy a specific authorized key
-   *
-   * @param timestamp - Timestamp of key to destroy
-   * @returns True if key existed and was destroyed
-   */
-  destroyKey(timestamp: Timestamp): boolean {
-    const key = this.authorizedKeys.get(timestamp);
-
-    if (!key) {
-      return false;
-    }
-
-    destroyKey(key);
-    this.authorizedKeys.delete(timestamp);
-    return true;
-  }
-
-  /**
-   * Destroy all authorized keys
-   *
-   * Should be called when viewer is done processing data
-   */
-  destroyAllKeys(): void {
-    for (const key of this.authorizedKeys.values()) {
-      destroyKey(key);
-    }
-
+  clearAllKeys(): void {
     this.authorizedKeys.clear();
   }
 
   /**
-   * Destroy keys for a specific time range
+   * Clear keys for specific time range
    *
-   * @param range - Time range of keys to destroy
-   * @returns Number of keys destroyed
+   * @param range - Time range of keys to clear
+   * @returns Number of keys cleared
    */
-  destroyKeysInRange(range: TimeRange): number {
+  clearKeysInRange(range: TimeRange): number {
     let count = 0;
 
-    for (const [timestamp, key] of this.authorizedKeys) {
+    for (const timestamp of this.authorizedKeys.keys()) {
       if (timestamp >= range.startTime && timestamp <= range.endTime) {
-        destroyKey(key);
         this.authorizedKeys.delete(timestamp);
         count++;
       }
@@ -276,7 +229,7 @@ export class DataViewer {
   }
 
   /**
-   * Get the viewer ID
+   * Get viewer ID
    */
   getViewerId(): string {
     return this.viewerId;
@@ -303,6 +256,15 @@ export class DataViewer {
             }
           : null
     };
+  }
+
+  /**
+   * Generate unique audit entry ID
+   */
+  private generateAuditId(): string {
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).substring(2, 15);
+    return `audit-${timestamp}-${random}`;
   }
 }
 

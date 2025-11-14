@@ -1,202 +1,156 @@
 /**
- * Authenticated Encryption Functions for ChronoCrypt
+ * Hybrid Asymmetric Encryption for ChronoCrypt
  *
- * Implements AES-256-CBC encryption with HMAC-SHA256 authentication
+ * Uses ECIES (Elliptic Curve Integrated Encryption Scheme) + AES-256-GCM
+ * - Generate ephemeral EC keypair
+ * - Derive shared secret via ECDH with recipient's public key
+ * - Use shared secret to encrypt symmetric key (key wrapping)
+ * - Encrypt data with AES-256-GCM using symmetric key
  */
 
+import { importPublicKey } from './key-derivation';
 import {
-  TimeSpecificKey,
-  IV,
-  AuthenticationTag,
+  ExportedPublicKey,
+  TimeSpecificPrivateKey,
   EncryptedPackage,
   Timestamp,
   EncryptionError,
   DecryptionError,
   AuthenticationError
-} from '../types';
+} from '../types/index';
 
 /**
- * IV size for AES-CBC (128-bit / 16 bytes)
+ * AES-GCM parameters
  */
-export const IV_SIZE = 16;
+const AES_KEY_LENGTH = 256;
+const AES_IV_LENGTH = 12; // 96 bits recommended for GCM
+const AES_TAG_LENGTH = 128; // 128 bits
 
 /**
- * Authentication tag size for HMAC-SHA256 (256-bit / 32 bytes)
+ * Generate random IV for AES-GCM
  */
-export const AUTH_TAG_SIZE = 32;
-
-/**
- * Generate a random initialization vector for AES-CBC
- *
- * @returns Random 16-byte IV
- */
-export function generateIV(): IV {
-  const iv = new Uint8Array(IV_SIZE);
-  crypto.getRandomValues(iv);
-  return iv;
+function generateIV(): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(AES_IV_LENGTH));
 }
 
 /**
- * Import a cryptographic key for use with Web Crypto API
+ * Encrypt data using hybrid encryption (ECIES + AES-GCM)
  *
- * @param keyBytes - Raw key bytes
- * @param algorithm - Algorithm to use the key with
- * @param usages - Key usage permissions
- * @returns CryptoKey object
- */
-async function importKey(
-  keyBytes: Uint8Array,
-  algorithm: string,
-  usages: KeyUsage[]
-): Promise<CryptoKey> {
-  return await crypto.subtle.importKey(
-    'raw',
-    keyBytes as BufferSource,
-    { name: algorithm },
-    false, // not extractable
-    usages
-  );
-}
-
-/**
- * Derive separate encryption and authentication keys from time-specific key
- *
- * Uses HKDF-like approach: separate keys from different hash contexts
- *
- * @param timeSpecificKey - The time-specific key
- * @returns Object with encryption and authentication keys
- */
-async function deriveEncryptionAndAuthKeys(timeSpecificKey: TimeSpecificKey): Promise<{
-  encryptionKey: CryptoKey;
-  authenticationKey: Uint8Array;
-}> {
-  // Derive encryption key: SHA-256(timeSpecificKey || 0x01)
-  const encKeyInput = new Uint8Array(timeSpecificKey.length + 1);
-  encKeyInput.set(timeSpecificKey, 0);
-  encKeyInput[timeSpecificKey.length] = 0x01;
-  const encKeyHash = await crypto.subtle.digest('SHA-256', encKeyInput);
-  const encKeyBytes = new Uint8Array(encKeyHash);
-
-  // Derive authentication key: SHA-256(timeSpecificKey || 0x02)
-  const authKeyInput = new Uint8Array(timeSpecificKey.length + 1);
-  authKeyInput.set(timeSpecificKey, 0);
-  authKeyInput[timeSpecificKey.length] = 0x02;
-  const authKeyHash = await crypto.subtle.digest('SHA-256', authKeyInput);
-  const authKeyBytes = new Uint8Array(authKeyHash);
-
-  // Import encryption key for AES-CBC
-  const encryptionKey = await importKey(encKeyBytes, 'AES-CBC', ['encrypt', 'decrypt']);
-
-  // Clean up temporary buffers
-  encKeyInput.fill(0);
-  authKeyInput.fill(0);
-  encKeyBytes.fill(0);
-
-  return {
-    encryptionKey,
-    authenticationKey: authKeyBytes
-  };
-}
-
-/**
- * Compute HMAC-SHA256 authentication tag
- *
- * @param authKey - Authentication key
- * @param data - Data to authenticate (encryptedData || IV || timestamp)
- * @returns Authentication tag
- */
-async function computeHMAC(authKey: Uint8Array, data: Uint8Array): Promise<AuthenticationTag> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    authKey as BufferSource,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-
-  const signature = await crypto.subtle.sign('HMAC', key, data as BufferSource);
-  return new Uint8Array(signature);
-}
-
-/**
- * Verify HMAC-SHA256 authentication tag
- *
- * @param authKey - Authentication key
- * @param data - Data that was authenticated
- * @param tag - Authentication tag to verify
- * @returns True if tag is valid
- */
-async function verifyHMAC(
-  authKey: Uint8Array,
-  data: Uint8Array,
-  tag: AuthenticationTag
-): Promise<boolean> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    authKey as BufferSource,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['verify']
-  );
-
-  return await crypto.subtle.verify('HMAC', key, tag as BufferSource, data as BufferSource);
-}
-
-/**
- * Encrypt data with authenticated encryption
+ * Process:
+ * 1. Generate random symmetric key K
+ * 2. Encrypt data with AES-256-GCM using K
+ * 3. Generate ephemeral ECDH keypair
+ * 4. Derive shared secret with recipient's public key
+ * 5. Wrap (encrypt) K using shared secret
  *
  * @param data - Data to encrypt
- * @param timeSpecificKey - Time-specific encryption key
- * @param timestamp - Timestamp for this encryption operation
- * @param metadata - Optional metadata to include
- * @returns Encrypted package with authentication
- * @throws {EncryptionError} If encryption fails
+ * @param recipientPublicKey - Recipient's master public key (JWK format)
+ * @param timestamp - Timestamp for time-based key derivation
+ * @param metadata - Optional metadata
+ * @returns Encrypted package
  */
 export async function encryptData(
   data: Uint8Array,
-  timeSpecificKey: TimeSpecificKey,
+  recipientPublicKey: ExportedPublicKey,
   timestamp: Timestamp,
   metadata?: Record<string, unknown>
 ): Promise<EncryptedPackage> {
   try {
-    // Derive separate encryption and authentication keys
-    const { encryptionKey, authenticationKey } = await deriveEncryptionAndAuthKeys(timeSpecificKey);
+    // 1. Generate random symmetric key for AES-GCM
+    const symmetricKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: AES_KEY_LENGTH },
+      true, // extractable
+      ['encrypt']
+    );
 
-    // Generate random IV
-    const iv = generateIV();
-
-    // Encrypt data using AES-256-CBC
-    const encryptedBuffer = await crypto.subtle.encrypt(
-      { name: 'AES-CBC', iv: iv as BufferSource },
-      encryptionKey,
+    // 2. Encrypt data with AES-GCM
+    const dataIv = generateIV();
+    const encryptedData = await crypto.subtle.encrypt(
+      {
+        name: 'AES-GCM',
+        iv: dataIv as BufferSource,
+        tagLength: AES_TAG_LENGTH
+      },
+      symmetricKey,
       data as BufferSource
     );
-    const encryptedData = new Uint8Array(encryptedBuffer);
 
-    // Prepare data for authentication: encryptedData || IV || timestamp
+    // Extract ciphertext and auth tag (GCM includes tag in output)
+    const encryptedBytes = new Uint8Array(encryptedData);
+    const tagStart = encryptedBytes.length - (AES_TAG_LENGTH / 8);
+    const ciphertext = encryptedBytes.slice(0, tagStart);
+    const authTag = encryptedBytes.slice(tagStart);
+
+    // 3. Generate ephemeral ECDH keypair
+    const ephemeralKeypair = await crypto.subtle.generateKey(
+      { name: 'ECDH', namedCurve: 'P-256' },
+      true,
+      ['deriveKey', 'deriveBits']
+    );
+
+    // 4. Import recipient public key and derive shared secret
+    const recipientKey = await importPublicKey(recipientPublicKey);
+
+    // Derive ECDH shared secret as raw bits
+    const ecdhSharedSecret = await crypto.subtle.deriveBits(
+      {
+        name: 'ECDH',
+        public: recipientKey
+      },
+      ephemeralKeypair.privateKey,
+      256 // 256 bits
+    );
+
+    // Incorporate timestamp into KDF for temporal binding
+    // Derive wrapping key: HKDF(ecdh_secret, salt=timestamp)
     const timestampBytes = new Uint8Array(8);
     new DataView(timestampBytes.buffer).setBigUint64(0, BigInt(timestamp), false);
 
-    const authData = new Uint8Array(
-      encryptedData.length + iv.length + timestampBytes.length
+    // Combine ECDH secret with timestamp for HKDF
+    const ikm = new Uint8Array(ecdhSharedSecret);
+    const info = new TextEncoder().encode('ChronoCrypt-Wrap-v1');
+
+    // Import secret for HKDF
+    const baseKey = await crypto.subtle.importKey(
+      'raw',
+      ikm,
+      { name: 'HKDF' },
+      false,
+      ['deriveKey']
     );
-    authData.set(encryptedData, 0);
-    authData.set(iv, encryptedData.length);
-    authData.set(timestampBytes, encryptedData.length + iv.length);
 
-    // Compute HMAC authentication tag
-    const authTag = await computeHMAC(authenticationKey, authData);
+    // Derive time-bound wrapping key using HKDF with timestamp as salt
+    const wrapKey = await crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: timestampBytes,
+        info: info
+      },
+      baseKey,
+      { name: 'AES-KW', length: 256 },
+      false,
+      ['wrapKey']
+    );
 
-    // Clean up sensitive data
-    authenticationKey.fill(0);
-    authData.fill(0);
-    timestampBytes.fill(0);
+    // 5. Wrap (encrypt) the symmetric key
+    const wrappedKey = await crypto.subtle.wrapKey(
+      'raw',
+      symmetricKey,
+      wrapKey,
+      { name: 'AES-KW' }
+    );
+
+    // Export ephemeral public key for decryption
+    const ephemeralPublicJwk = await crypto.subtle.exportKey('jwk', ephemeralKeypair.publicKey);
 
     return {
       timestamp,
-      encryptedData,
-      iv,
-      authTag,
+      encryptedKey: new Uint8Array(wrappedKey),
+      ephemeralPublicKey: ephemeralPublicJwk,
+      encryptedData: ciphertext,
+      iv: dataIv,
+      authTag: authTag,
       metadata
     };
   } catch (error) {
@@ -207,57 +161,107 @@ export async function encryptData(
 }
 
 /**
- * Decrypt and verify authenticated encrypted data
+ * Decrypt data using time-specific private key
+ *
+ * Process:
+ * 1. Derive shared secret using ephemeral public key and time-specific private key
+ * 2. Unwrap (decrypt) symmetric key K
+ * 3. Decrypt data using K and AES-GCM
  *
  * @param pkg - Encrypted package
- * @param timeSpecificKey - Time-specific decryption key
+ * @param timeSpecificPrivateKey - Time-specific private key for this timestamp
  * @returns Decrypted data
- * @throws {DecryptionError} If decryption fails
- * @throws {AuthenticationError} If authentication verification fails
  */
 export async function decryptData(
   pkg: EncryptedPackage,
-  timeSpecificKey: TimeSpecificKey
+  timeSpecificPrivateKey: TimeSpecificPrivateKey
 ): Promise<Uint8Array> {
   try {
-    // Derive separate encryption and authentication keys
-    const { encryptionKey, authenticationKey } = await deriveEncryptionAndAuthKeys(timeSpecificKey);
+    // 1. Import ephemeral public key
+    const ephemeralPublicKey = await crypto.subtle.importKey(
+      'jwk',
+      pkg.ephemeralPublicKey,
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      []
+    );
 
-    // Verify authentication tag first
+    // 2. Derive ECDH shared secret as raw bits
+    const ecdhSharedSecret = await crypto.subtle.deriveBits(
+      {
+        name: 'ECDH',
+        public: ephemeralPublicKey
+      },
+      timeSpecificPrivateKey,
+      256
+    );
+
+    // 3. Incorporate timestamp into KDF (same as encryption)
     const timestampBytes = new Uint8Array(8);
     new DataView(timestampBytes.buffer).setBigUint64(0, BigInt(pkg.timestamp), false);
 
-    const authData = new Uint8Array(
-      pkg.encryptedData.length + pkg.iv.length + timestampBytes.length
-    );
-    authData.set(pkg.encryptedData, 0);
-    authData.set(pkg.iv, pkg.encryptedData.length);
-    authData.set(timestampBytes, pkg.encryptedData.length + pkg.iv.length);
+    const ikm = new Uint8Array(ecdhSharedSecret);
+    const info = new TextEncoder().encode('ChronoCrypt-Wrap-v1');
 
-    const isValid = await verifyHMAC(authenticationKey, authData, pkg.authTag);
-
-    // Clean up auth data
-    authenticationKey.fill(0);
-    authData.fill(0);
-    timestampBytes.fill(0);
-
-    if (!isValid) {
-      throw new AuthenticationError(
-        'Authentication verification failed - data may have been tampered with'
-      );
-    }
-
-    // Decrypt data using AES-256-CBC
-    const decryptedBuffer = await crypto.subtle.decrypt(
-      { name: 'AES-CBC', iv: pkg.iv as BufferSource },
-      encryptionKey,
-      pkg.encryptedData as BufferSource
+    // Import secret for HKDF
+    const baseKey = await crypto.subtle.importKey(
+      'raw',
+      ikm,
+      { name: 'HKDF' },
+      false,
+      ['deriveKey']
     );
 
-    return new Uint8Array(decryptedBuffer);
+    // Derive time-bound unwrapping key using HKDF with timestamp as salt
+    const unwrapKey = await crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: timestampBytes,
+        info: info
+      },
+      baseKey,
+      { name: 'AES-KW', length: 256 },
+      false,
+      ['unwrapKey']
+    );
+
+    // 4. Unwrap (decrypt) the symmetric key
+    const symmetricKey = await crypto.subtle.unwrapKey(
+      'raw',
+      pkg.encryptedKey as BufferSource,
+      unwrapKey,
+      { name: 'AES-KW' },
+      { name: 'AES-GCM', length: AES_KEY_LENGTH },
+      false,
+      ['decrypt']
+    );
+
+    // 5. Reconstruct encrypted data with auth tag
+    const encryptedWithTag = new Uint8Array(pkg.encryptedData.length + pkg.authTag.length);
+    encryptedWithTag.set(pkg.encryptedData, 0);
+    encryptedWithTag.set(pkg.authTag, pkg.encryptedData.length);
+
+    // 6. Decrypt data with AES-GCM
+    const decryptedData = await crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: pkg.iv as BufferSource,
+        tagLength: AES_TAG_LENGTH
+      },
+      symmetricKey,
+      encryptedWithTag as BufferSource
+    );
+
+    return new Uint8Array(decryptedData);
   } catch (error) {
-    if (error instanceof AuthenticationError) {
-      throw error;
+    // GCM authentication failure
+    // Web Crypto throws "operation failed" for GCM auth failures
+    if (error instanceof Error &&
+        (error.message.includes('authentication') ||
+         error.message.includes('operation failed') ||
+         error.name === 'OperationError')) {
+      throw new AuthenticationError('Data authentication failed - data may be tampered');
     }
     throw new DecryptionError(
       `Decryption failed: ${error instanceof Error ? error.message : String(error)}`
@@ -266,61 +270,26 @@ export async function decryptData(
 }
 
 /**
- * Verify the authenticity of an encrypted package without decrypting
- *
- * @param pkg - Encrypted package to verify
- * @param timeSpecificKey - Time-specific key
- * @returns True if authentication is valid
- */
-export async function verifyAuthentication(
-  pkg: EncryptedPackage,
-  timeSpecificKey: TimeSpecificKey
-): Promise<boolean> {
-  try {
-    const { authenticationKey } = await deriveEncryptionAndAuthKeys(timeSpecificKey);
-
-    const timestampBytes = new Uint8Array(8);
-    new DataView(timestampBytes.buffer).setBigUint64(0, BigInt(pkg.timestamp), false);
-
-    const authData = new Uint8Array(
-      pkg.encryptedData.length + pkg.iv.length + timestampBytes.length
-    );
-    authData.set(pkg.encryptedData, 0);
-    authData.set(pkg.iv, pkg.encryptedData.length);
-    authData.set(timestampBytes, pkg.encryptedData.length + pkg.iv.length);
-
-    const isValid = await verifyHMAC(authenticationKey, authData, pkg.authTag);
-
-    // Clean up
-    authenticationKey.fill(0);
-    authData.fill(0);
-    timestampBytes.fill(0);
-
-    return isValid;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Serialize an encrypted package to a portable format
- *
- * Format: [timestamp(8)] [ivLength(2)] [iv] [tagLength(2)] [tag] [encDataLength(4)] [encData] [metadata]
+ * Serialize encrypted package to portable format
  *
  * @param pkg - Encrypted package
  * @returns Serialized bytes
  */
 export function serializeEncryptedPackage(pkg: EncryptedPackage): Uint8Array {
+  const ephemeralKeyStr = JSON.stringify(pkg.ephemeralPublicKey);
+  const ephemeralKeyBytes = new TextEncoder().encode(ephemeralKeyStr);
   const metadataBytes = pkg.metadata
     ? new TextEncoder().encode(JSON.stringify(pkg.metadata))
     : new Uint8Array(0);
 
   const totalSize =
     8 + // timestamp
-    2 + pkg.iv.length + // IV length + IV
-    2 + pkg.authTag.length + // tag length + tag
-    4 + pkg.encryptedData.length + // data length + data
-    4 + metadataBytes.length; // metadata length + metadata
+    4 + pkg.encryptedKey.length + // encrypted key length + data
+    4 + ephemeralKeyBytes.length + // ephemeral key length + data
+    4 + pkg.encryptedData.length + // encrypted data length + data
+    4 + pkg.iv.length + // IV length + data
+    4 + pkg.authTag.length + // tag length + data
+    4 + metadataBytes.length; // metadata length + data
 
   const buffer = new Uint8Array(totalSize);
   const view = new DataView(buffer.buffer);
@@ -330,23 +299,35 @@ export function serializeEncryptedPackage(pkg: EncryptedPackage): Uint8Array {
   view.setBigUint64(offset, BigInt(pkg.timestamp), false);
   offset += 8;
 
-  // Write IV
-  view.setUint16(offset, pkg.iv.length, false);
-  offset += 2;
-  buffer.set(pkg.iv, offset);
-  offset += pkg.iv.length;
+  // Write encrypted key
+  view.setUint32(offset, pkg.encryptedKey.length, false);
+  offset += 4;
+  buffer.set(pkg.encryptedKey, offset);
+  offset += pkg.encryptedKey.length;
 
-  // Write auth tag
-  view.setUint16(offset, pkg.authTag.length, false);
-  offset += 2;
-  buffer.set(pkg.authTag, offset);
-  offset += pkg.authTag.length;
+  // Write ephemeral public key
+  view.setUint32(offset, ephemeralKeyBytes.length, false);
+  offset += 4;
+  buffer.set(ephemeralKeyBytes, offset);
+  offset += ephemeralKeyBytes.length;
 
   // Write encrypted data
   view.setUint32(offset, pkg.encryptedData.length, false);
   offset += 4;
   buffer.set(pkg.encryptedData, offset);
   offset += pkg.encryptedData.length;
+
+  // Write IV
+  view.setUint32(offset, pkg.iv.length, false);
+  offset += 4;
+  buffer.set(pkg.iv, offset);
+  offset += pkg.iv.length;
+
+  // Write auth tag
+  view.setUint32(offset, pkg.authTag.length, false);
+  offset += 4;
+  buffer.set(pkg.authTag, offset);
+  offset += pkg.authTag.length;
 
   // Write metadata
   view.setUint32(offset, metadataBytes.length, false);
@@ -357,11 +338,10 @@ export function serializeEncryptedPackage(pkg: EncryptedPackage): Uint8Array {
 }
 
 /**
- * Deserialize an encrypted package from portable format
+ * Deserialize encrypted package from portable format
  *
  * @param bytes - Serialized bytes
  * @returns Encrypted package
- * @throws {DecryptionError} If deserialization fails
  */
 export function deserializeEncryptedPackage(bytes: Uint8Array): EncryptedPackage {
   try {
@@ -372,36 +352,50 @@ export function deserializeEncryptedPackage(bytes: Uint8Array): EncryptedPackage
     const timestamp = Number(view.getBigUint64(offset, false));
     offset += 8;
 
-    // Read IV
-    const ivLength = view.getUint16(offset, false);
-    offset += 2;
-    const iv = bytes.slice(offset, offset + ivLength);
-    offset += ivLength;
+    // Read encrypted key
+    const encKeyLen = view.getUint32(offset, false);
+    offset += 4;
+    const encryptedKey = bytes.slice(offset, offset + encKeyLen);
+    offset += encKeyLen;
 
-    // Read auth tag
-    const tagLength = view.getUint16(offset, false);
-    offset += 2;
-    const authTag = bytes.slice(offset, offset + tagLength);
-    offset += tagLength;
+    // Read ephemeral public key
+    const ephKeyLen = view.getUint32(offset, false);
+    offset += 4;
+    const ephKeyBytes = bytes.slice(offset, offset + ephKeyLen);
+    const ephemeralPublicKey = JSON.parse(new TextDecoder().decode(ephKeyBytes));
+    offset += ephKeyLen;
 
     // Read encrypted data
-    const dataLength = view.getUint32(offset, false);
+    const dataLen = view.getUint32(offset, false);
     offset += 4;
-    const encryptedData = bytes.slice(offset, offset + dataLength);
-    offset += dataLength;
+    const encryptedData = bytes.slice(offset, offset + dataLen);
+    offset += dataLen;
+
+    // Read IV
+    const ivLen = view.getUint32(offset, false);
+    offset += 4;
+    const iv = bytes.slice(offset, offset + ivLen);
+    offset += ivLen;
+
+    // Read auth tag
+    const tagLen = view.getUint32(offset, false);
+    offset += 4;
+    const authTag = bytes.slice(offset, offset + tagLen);
+    offset += tagLen;
 
     // Read metadata
-    const metadataLength = view.getUint32(offset, false);
+    const metaLen = view.getUint32(offset, false);
     offset += 4;
     let metadata: Record<string, unknown> | undefined;
-    if (metadataLength > 0) {
-      const metadataBytes = bytes.slice(offset, offset + metadataLength);
-      const metadataStr = new TextDecoder().decode(metadataBytes);
-      metadata = JSON.parse(metadataStr);
+    if (metaLen > 0) {
+      const metaBytes = bytes.slice(offset, offset + metaLen);
+      metadata = JSON.parse(new TextDecoder().decode(metaBytes));
     }
 
     return {
       timestamp,
+      encryptedKey,
+      ephemeralPublicKey,
       encryptedData,
       iv,
       authTag,
@@ -409,7 +403,7 @@ export function deserializeEncryptedPackage(bytes: Uint8Array): EncryptedPackage
     };
   } catch (error) {
     throw new DecryptionError(
-      `Failed to deserialize encrypted package: ${error instanceof Error ? error.message : String(error)}`
+      `Failed to deserialize package: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 }

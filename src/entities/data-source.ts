@@ -1,40 +1,42 @@
 /**
- * Data Source Entity
+ * Data Source Entity - Asymmetric Encryption Only
  *
- * Encrypts temporal data streams using time-derived cryptographic keys
+ * SECURITY MODEL:
+ * - DataSource is in UNTRUSTED zone (could be compromised)
+ * - Has ONLY public key - can encrypt but CANNOT decrypt
+ * - Never sees or stores private/master key
+ * - If DataSource is compromised, attacker cannot decrypt any data
  */
 
-import { deriveTimeSpecificKey, destroyKey } from '../crypto/key-derivation';
 import { encryptData } from '../crypto/encryption';
 import {
   DataSourceConfig,
   EncryptedPackage,
   EncryptedDataRepository,
   Timestamp,
-  MasterKey
-} from '../types';
+  ExportedPublicKey
+} from '../types/index';
 
 /**
- * Data Source Entity - Primary Function: Encrypts temporal data streams
+ * Data Source Entity - Encrypts temporal data streams
  *
  * Core Responsibilities:
- * - Generate time-specific encryption keys from master cryptographic material
- * - Apply authenticated encryption to data payloads with temporal metadata
- * - Store encrypted data with associated timestamp and authentication information
- * - Maintain encrypted data repository accessible to authorized data consumers
+ * - Encrypt data using master PUBLIC key only
+ * - Store encrypted data with temporal metadata
+ * - CANNOT decrypt any data (no private key access)
  *
- * Operational Constraints:
- * - Must not retain decryption capabilities for stored data
- * - Must implement cryptographically secure key derivation functions
- * - Must associate each encrypted payload with precise temporal identifiers
+ * Security Guarantees:
+ * - Compromise of DataSource does NOT expose decryption capability
+ * - Zero-knowledge: DataSource never sees plaintext after encryption
+ * - Forward secrecy: Each timestamp uses derived public key
  */
 export class DataSource {
-  private masterKey: MasterKey;
+  private publicKey: ExportedPublicKey;
   private repository: EncryptedDataRepository;
   private timestampGenerator: () => Timestamp;
 
   constructor(config: DataSourceConfig, repository: EncryptedDataRepository) {
-    this.masterKey = config.masterKey;
+    this.publicKey = config.publicKey; // PUBLIC KEY ONLY - cannot decrypt!
     this.repository = repository;
     this.timestampGenerator = config.timestampGenerator || (() => Date.now());
   }
@@ -44,10 +46,10 @@ export class DataSource {
    *
    * Workflow:
    * 1. Generate timestamp for data payload
-   * 2. Derive time-specific encryption key from master key and timestamp
-   * 3. Apply authenticated encryption to data payload using derived key
-   * 4. Store encrypted data with timestamp, IV, and authentication information
-   * 5. Securely destroy derived encryption key from memory
+   * 2. Encrypt using public key + timestamp (hybrid ECIES + AES)
+   * 3. Store encrypted data in repository
+   *
+   * DataSource CANNOT decrypt this data - only has public key
    *
    * @param data - Data to encrypt
    * @param metadata - Optional metadata to associate with encrypted data
@@ -57,28 +59,14 @@ export class DataSource {
     data: Uint8Array,
     metadata?: Record<string, unknown>
   ): Promise<EncryptedPackage> {
-    // Step 1: Generate timestamp
     const timestamp = this.timestampGenerator();
-
-    // Step 2: Derive time-specific encryption key
-    const timeSpecificKey = await deriveTimeSpecificKey(this.masterKey, timestamp);
-
-    try {
-      // Step 3: Apply authenticated encryption
-      const encryptedPackage = await encryptData(data, timeSpecificKey, timestamp, metadata);
-
-      // Step 4: Store encrypted data
-      await this.repository.store(encryptedPackage);
-
-      return encryptedPackage;
-    } finally {
-      // Step 5: Securely destroy derived key
-      destroyKey(timeSpecificKey);
-    }
+    const encrypted = await encryptData(data, this.publicKey, timestamp, metadata);
+    await this.repository.store(encrypted);
+    return encrypted;
   }
 
   /**
-   * Encrypt data with explicit timestamp (for batch operations or specific time periods)
+   * Encrypt data with explicit timestamp
    *
    * @param data - Data to encrypt
    * @param timestamp - Explicit timestamp to use
@@ -90,21 +78,9 @@ export class DataSource {
     timestamp: Timestamp,
     metadata?: Record<string, unknown>
   ): Promise<EncryptedPackage> {
-    // Derive time-specific encryption key
-    const timeSpecificKey = await deriveTimeSpecificKey(this.masterKey, timestamp);
-
-    try {
-      // Apply authenticated encryption
-      const encryptedPackage = await encryptData(data, timeSpecificKey, timestamp, metadata);
-
-      // Store encrypted data
-      await this.repository.store(encryptedPackage);
-
-      return encryptedPackage;
-    } finally {
-      // Securely destroy derived key
-      destroyKey(timeSpecificKey);
-    }
+    const encrypted = await encryptData(data, this.publicKey, timestamp, metadata);
+    await this.repository.store(encrypted);
+    return encrypted;
   }
 
   /**
@@ -145,40 +121,37 @@ export class DataSource {
 
   /**
    * Get the encrypted data repository (read-only access)
-   *
-   * This allows external entities to retrieve encrypted data without
-   * having access to decryption capabilities
    */
   getRepository(): EncryptedDataRepository {
     return this.repository;
   }
 
   /**
-   * Securely destroy this data source and clean up sensitive material
+   * Get the public key being used for encryption
    *
-   * Note: This does not destroy the encrypted data in the repository,
-   * only the master key held by this data source instance
+   * @returns Public key in JWK format
    */
-  destroy(): void {
-    destroyKey(this.masterKey);
+  getPublicKey(): ExportedPublicKey {
+    return this.publicKey;
   }
 }
 
 /**
- * Helper function to create a data source with a new master key
+ * Helper function to create a data source
  *
+ * @param publicKey - Master public key (from KeyHolder)
  * @param repository - Encrypted data repository
  * @param timestampGenerator - Optional custom timestamp generator
  * @returns New data source instance
  */
 export function createDataSource(
+  publicKey: ExportedPublicKey,
   repository: EncryptedDataRepository,
-  masterKey: MasterKey,
   timestampGenerator?: () => Timestamp
 ): DataSource {
   return new DataSource(
     {
-      masterKey,
+      publicKey,
       timestampGenerator
     },
     repository

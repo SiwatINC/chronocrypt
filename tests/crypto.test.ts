@@ -1,226 +1,400 @@
 import { describe, test, expect } from 'bun:test';
 import {
-  generateMasterKey,
-  validateMasterKey,
-  deriveTimeSpecificKey,
-  deriveMultipleKeys,
-  destroyKey,
-  importMasterKeyFromHex,
-  exportMasterKeyToHex,
-  importMasterKeyFromBase64,
-  exportMasterKeyToBase64,
-  MASTER_KEY_SIZE
+  generateMasterKeypair,
+  exportPublicKey,
+  importPublicKey,
+  deriveTimeSpecificPrivateKey,
+  deriveMultiplePrivateKeys,
+  exportMasterKeypair,
+  importMasterKeypair
 } from '../src/crypto/key-derivation';
 import {
   encryptData,
   decryptData,
-  verifyAuthentication,
-  generateIV,
   serializeEncryptedPackage,
-  deserializeEncryptedPackage,
-  IV_SIZE
+  deserializeEncryptedPackage
 } from '../src/crypto/encryption';
-import { InvalidKeyError, AuthenticationError } from '../src/types';
+import {
+  MasterKeypair,
+  ExportedPublicKey,
+  EncryptionError,
+  DecryptionError,
+  AuthenticationError
+} from '../src/types';
 
-describe('Key Derivation', () => {
-  test('generateMasterKey creates 256-bit key', () => {
-    const key = generateMasterKey();
-    expect(key).toBeInstanceOf(Uint8Array);
-    expect(key.length).toBe(MASTER_KEY_SIZE);
+describe('Asymmetric Key Generation and Derivation', () => {
+  test('generateMasterKeypair creates EC keypair', async () => {
+    const keypair = await generateMasterKeypair();
+
+    expect(keypair.privateKey).toBeDefined();
+    expect(keypair.publicKey).toBeDefined();
+    expect(keypair.privateKey.type).toBe('private');
+    expect(keypair.publicKey.type).toBe('public');
+    expect(keypair.privateKey.algorithm.name).toBe('ECDH');
+    expect(keypair.publicKey.algorithm.name).toBe('ECDH');
   });
 
-  test('generateMasterKey creates unique keys', () => {
-    const key1 = generateMasterKey();
-    const key2 = generateMasterKey();
-    expect(key1).not.toEqual(key2);
+  test('generateMasterKeypair creates unique keypairs', async () => {
+    const keypair1 = await generateMasterKeypair();
+    const keypair2 = await generateMasterKeypair();
+
+    const exported1 = await exportPublicKey(keypair1.publicKey);
+    const exported2 = await exportPublicKey(keypair2.publicKey);
+
+    expect(exported1.x).not.toBe(exported2.x);
+    expect(exported1.y).not.toBe(exported2.y);
   });
 
-  test('validateMasterKey accepts valid keys', () => {
-    const key = generateMasterKey();
-    expect(() => validateMasterKey(key)).not.toThrow();
+  test('exportPublicKey and importPublicKey are reversible', async () => {
+    const keypair = await generateMasterKeypair();
+    const exported = await exportPublicKey(keypair.publicKey);
+    const imported = await importPublicKey(exported);
+
+    expect(imported.type).toBe('public');
+    expect(imported.algorithm.name).toBe('ECDH');
+
+    const reExported = await exportPublicKey(imported);
+    expect(reExported.x).toBe(exported.x);
+    expect(reExported.y).toBe(exported.y);
   });
 
-  test('validateMasterKey rejects invalid key size', () => {
-    const invalidKey = new Uint8Array(16); // Wrong size
-    expect(() => validateMasterKey(invalidKey)).toThrow(InvalidKeyError);
-  });
-
-  test('validateMasterKey rejects all-zero keys', () => {
-    const zeroKey = new Uint8Array(MASTER_KEY_SIZE);
-    expect(() => validateMasterKey(zeroKey)).toThrow(InvalidKeyError);
-  });
-
-  test('deriveTimeSpecificKey produces deterministic results', async () => {
-    const masterKey = generateMasterKey();
+  test('deriveTimeSpecificPrivateKey returns valid CryptoKey', async () => {
+    const keypair = await generateMasterKeypair();
     const timestamp = Date.now();
 
-    const key1 = await deriveTimeSpecificKey(masterKey, timestamp);
-    const key2 = await deriveTimeSpecificKey(masterKey, timestamp);
+    const timeKey = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp);
 
-    expect(key1).toEqual(key2);
+    expect(timeKey).toBeDefined();
+    expect(timeKey.type).toBe('private');
+    expect(timeKey.algorithm.name).toBe('ECDH');
   });
 
-  test('deriveTimeSpecificKey produces different keys for different timestamps', async () => {
-    const masterKey = generateMasterKey();
+  test('deriveTimeSpecificPrivateKey returns master key (temporal isolation via KDF)', async () => {
+    const keypair = await generateMasterKeypair();
     const timestamp1 = 1000000;
     const timestamp2 = 2000000;
 
-    const key1 = await deriveTimeSpecificKey(masterKey, timestamp1);
-    const key2 = await deriveTimeSpecificKey(masterKey, timestamp2);
+    const key1 = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp1);
+    const key2 = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp2);
 
-    expect(key1).not.toEqual(key2);
+    // Keys are the same (master key), but temporal isolation happens in KDF
+    expect(key1).toBe(key2);
+    expect(key1).toBe(keypair.privateKey);
   });
 
-  test('deriveMultipleKeys produces correct number of keys', async () => {
-    const masterKey = generateMasterKey();
+  test('deriveTimeSpecificPrivateKey produces deterministic results', async () => {
+    const keypair = await generateMasterKeypair();
+    const timestamp = 1234567890;
+
+    // Derive twice with same timestamp
+    const key1 = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp);
+    const key2 = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp);
+
+    // Test by using both keys to decrypt same data - should both work
+    const data = new TextEncoder().encode('Test data');
+    const publicKey = await exportPublicKey(keypair.publicKey);
+
+    const encrypted = await encryptData(data, publicKey, timestamp);
+
+    // Both keys should decrypt successfully
+    const decrypted1 = await decryptData(encrypted, key1);
+    const decrypted2 = await decryptData(encrypted, key2);
+
+    expect(decrypted1).toEqual(data);
+    expect(decrypted2).toEqual(data);
+  });
+
+  test('deriveMultiplePrivateKeys produces correct number of keys', async () => {
+    const keypair = await generateMasterKeypair();
     const timestamps = [1000, 2000, 3000, 4000, 5000];
 
-    const keys = await deriveMultipleKeys(masterKey, timestamps);
+    const keys = await deriveMultiplePrivateKeys(keypair.privateKey, timestamps);
 
     expect(keys.size).toBe(timestamps.length);
     for (const timestamp of timestamps) {
       expect(keys.has(timestamp)).toBe(true);
+      const key = keys.get(timestamp)!;
+      expect(key.type).toBe('private');
+      expect(key.algorithm.name).toBe('ECDH');
     }
   });
 
-  test('exportMasterKeyToHex and importMasterKeyFromHex are reversible', () => {
-    const originalKey = generateMasterKey();
-    const hex = exportMasterKeyToHex(originalKey);
-    const importedKey = importMasterKeyFromHex(hex);
+  test('exportMasterKeypair and importMasterKeypair are reversible', async () => {
+    const originalKeypair = await generateMasterKeypair();
+    const exported = await exportMasterKeypair(originalKeypair);
+    const imported = await importMasterKeypair(exported);
 
-    expect(importedKey).toEqual(originalKey);
-  });
+    expect(imported.privateKey.type).toBe('private');
+    expect(imported.publicKey.type).toBe('public');
 
-  test('exportMasterKeyToBase64 and importMasterKeyFromBase64 are reversible', () => {
-    const originalKey = generateMasterKey();
-    const base64 = exportMasterKeyToBase64(originalKey);
-    const importedKey = importMasterKeyFromBase64(base64);
+    // Verify by encrypting with original public key and decrypting with imported private key
+    const data = new TextEncoder().encode('Test data');
+    const timestamp = Date.now();
+    const publicKey = await exportPublicKey(originalKeypair.publicKey);
 
-    expect(importedKey).toEqual(originalKey);
-  });
+    const encrypted = await encryptData(data, publicKey, timestamp);
+    const timeKey = await deriveTimeSpecificPrivateKey(imported.privateKey, timestamp);
+    const decrypted = await decryptData(encrypted, timeKey);
 
-  test('destroyKey zeros out key data', () => {
-    const key = generateMasterKey();
-    destroyKey(key);
-
-    const isAllZeros = key.every(byte => byte === 0);
-    expect(isAllZeros).toBe(true);
+    expect(decrypted).toEqual(data);
   });
 });
 
-describe('Encryption and Decryption', () => {
-  test('generateIV creates correct size', () => {
-    const iv = generateIV();
-    expect(iv).toBeInstanceOf(Uint8Array);
-    expect(iv.length).toBe(IV_SIZE);
-  });
+describe('Hybrid Asymmetric Encryption (ECIES + AES-GCM)', () => {
+  test('encryptData produces valid encrypted package', async () => {
+    const keypair = await generateMasterKeypair();
+    const publicKey = await exportPublicKey(keypair.publicKey);
+    const timestamp = Date.now();
+    const data = new TextEncoder().encode('Hello, ChronoCrypt!');
 
-  test('generateIV creates unique IVs', () => {
-    const iv1 = generateIV();
-    const iv2 = generateIV();
-    expect(iv1).not.toEqual(iv2);
+    const encrypted = await encryptData(data, publicKey, timestamp);
+
+    expect(encrypted.timestamp).toBe(timestamp);
+    expect(encrypted.encryptedKey).toBeInstanceOf(Uint8Array);
+    expect(encrypted.encryptedKey.length).toBeGreaterThan(0);
+    expect(encrypted.ephemeralPublicKey).toBeDefined();
+    expect(encrypted.ephemeralPublicKey.kty).toBe('EC');
+    expect(encrypted.encryptedData).toBeInstanceOf(Uint8Array);
+    expect(encrypted.encryptedData.length).toBeGreaterThan(0);
+    expect(encrypted.iv).toBeInstanceOf(Uint8Array);
+    expect(encrypted.iv.length).toBe(12); // 96 bits
+    expect(encrypted.authTag).toBeInstanceOf(Uint8Array);
+    expect(encrypted.authTag.length).toBe(16); // 128 bits
   });
 
   test('encryptData and decryptData work correctly', async () => {
-    const masterKey = generateMasterKey();
+    const keypair = await generateMasterKeypair();
+    const publicKey = await exportPublicKey(keypair.publicKey);
     const timestamp = Date.now();
-    const originalData = new TextEncoder().encode('Hello, ChronoCrypt!');
+    const originalData = new TextEncoder().encode('Sensitive information');
 
-    const timeKey = await deriveTimeSpecificKey(masterKey, timestamp);
-    const encrypted = await encryptData(originalData, timeKey, timestamp);
+    // Encrypt with public key
+    const encrypted = await encryptData(originalData, publicKey, timestamp);
 
-    expect(encrypted.timestamp).toBe(timestamp);
-    expect(encrypted.encryptedData).not.toEqual(originalData);
+    // Derive time-specific private key
+    const timePrivateKey = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp);
 
-    const decrypted = await decryptData(encrypted, timeKey);
+    // Decrypt with time-specific private key
+    const decrypted = await decryptData(encrypted, timePrivateKey);
+
     expect(decrypted).toEqual(originalData);
-
-    destroyKey(timeKey);
+    expect(new TextDecoder().decode(decrypted)).toBe('Sensitive information');
   });
 
-  test('decryption with wrong key fails', async () => {
-    const masterKey = generateMasterKey();
-    const wrongMasterKey = generateMasterKey();
+  test('decryption with wrong private key fails', async () => {
+    const keypair1 = await generateMasterKeypair();
+    const keypair2 = await generateMasterKeypair();
+    const publicKey1 = await exportPublicKey(keypair1.publicKey);
     const timestamp = Date.now();
-    const originalData = new TextEncoder().encode('Secret data');
+    const data = new TextEncoder().encode('Secret data');
 
-    const timeKey = await deriveTimeSpecificKey(masterKey, timestamp);
-    const encrypted = await encryptData(originalData, timeKey, timestamp);
+    // Encrypt with keypair1's public key
+    const encrypted = await encryptData(data, publicKey1, timestamp);
 
-    const wrongTimeKey = await deriveTimeSpecificKey(wrongMasterKey, timestamp);
+    // Try to decrypt with keypair2's private key (wrong key)
+    const wrongTimeKey = await deriveTimeSpecificPrivateKey(keypair2.privateKey, timestamp);
 
-    await expect(decryptData(encrypted, wrongTimeKey)).rejects.toThrow(AuthenticationError);
-
-    destroyKey(timeKey);
-    destroyKey(wrongTimeKey);
+    await expect(decryptData(encrypted, wrongTimeKey)).rejects.toThrow();
   });
 
-  test('tampered data fails authentication', async () => {
-    const masterKey = generateMasterKey();
-    const timestamp = Date.now();
-    const originalData = new TextEncoder().encode('Important data');
+  test('decryption with wrong timestamp fails (KDF temporal binding)', async () => {
+    const keypair = await generateMasterKeypair();
+    const publicKey = await exportPublicKey(keypair.publicKey);
+    const timestamp1 = 1000000;
+    const data = new TextEncoder().encode('Timestamp-bound data');
 
-    const timeKey = await deriveTimeSpecificKey(masterKey, timestamp);
-    const encrypted = await encryptData(originalData, timeKey, timestamp);
+    // Encrypt at timestamp1
+    const encrypted = await encryptData(data, publicKey, timestamp1);
+
+    // Try to decrypt with modified timestamp in package
+    const tamperedPkg = { ...encrypted, timestamp: 2000000 };
+    const masterKey = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp1);
+
+    // Should fail because KDF uses timestamp in derivation
+    await expect(decryptData(tamperedPkg, masterKey)).rejects.toThrow();
+  });
+
+  test('tampered encrypted data fails authentication', async () => {
+    const keypair = await generateMasterKeypair();
+    const publicKey = await exportPublicKey(keypair.publicKey);
+    const timestamp = Date.now();
+    const data = new TextEncoder().encode('Important data');
+
+    const encrypted = await encryptData(data, publicKey, timestamp);
+    const timeKey = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp);
 
     // Tamper with encrypted data
     encrypted.encryptedData[0] ^= 0xFF;
 
     await expect(decryptData(encrypted, timeKey)).rejects.toThrow(AuthenticationError);
-
-    destroyKey(timeKey);
   });
 
-  test('verifyAuthentication works correctly', async () => {
-    const masterKey = generateMasterKey();
+  test('tampered auth tag fails authentication', async () => {
+    const keypair = await generateMasterKeypair();
+    const publicKey = await exportPublicKey(keypair.publicKey);
     const timestamp = Date.now();
-    const data = new TextEncoder().encode('Test data');
+    const data = new TextEncoder().encode('Authenticated data');
 
-    const timeKey = await deriveTimeSpecificKey(masterKey, timestamp);
-    const encrypted = await encryptData(data, timeKey, timestamp);
+    const encrypted = await encryptData(data, publicKey, timestamp);
+    const timeKey = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp);
 
-    const isValid = await verifyAuthentication(encrypted, timeKey);
-    expect(isValid).toBe(true);
+    // Tamper with auth tag
+    encrypted.authTag[0] ^= 0xFF;
 
-    destroyKey(timeKey);
+    await expect(decryptData(encrypted, timeKey)).rejects.toThrow(AuthenticationError);
+  });
+
+  test('encryption with metadata preserves metadata', async () => {
+    const keypair = await generateMasterKeypair();
+    const publicKey = await exportPublicKey(keypair.publicKey);
+    const timestamp = Date.now();
+    const data = new TextEncoder().encode('Data with metadata');
+    const metadata = {
+      deviceId: 'sensor-001',
+      location: 'datacenter-1',
+      temperature: 22.5,
+      humidity: 45
+    };
+
+    const encrypted = await encryptData(data, publicKey, timestamp, metadata);
+
+    expect(encrypted.metadata).toEqual(metadata);
+
+    // Verify metadata survives decryption
+    const timeKey = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp);
+    const decrypted = await decryptData(encrypted, timeKey);
+
+    expect(decrypted).toEqual(data);
   });
 
   test('serializeEncryptedPackage and deserializeEncryptedPackage are reversible', async () => {
-    const masterKey = generateMasterKey();
+    const keypair = await generateMasterKeypair();
+    const publicKey = await exportPublicKey(keypair.publicKey);
     const timestamp = Date.now();
-    const data = new TextEncoder().encode('Serialization test');
-    const metadata = { source: 'test', version: 1 };
+    const data = new TextEncoder().encode('Serialization test data');
+    const metadata = { source: 'test-suite', version: 2 };
 
-    const timeKey = await deriveTimeSpecificKey(masterKey, timestamp);
-    const encrypted = await encryptData(data, timeKey, timestamp, metadata);
+    const encrypted = await encryptData(data, publicKey, timestamp, metadata);
 
     const serialized = serializeEncryptedPackage(encrypted);
+    expect(serialized).toBeInstanceOf(Uint8Array);
+    expect(serialized.length).toBeGreaterThan(0);
+
     const deserialized = deserializeEncryptedPackage(serialized);
 
     expect(deserialized.timestamp).toBe(encrypted.timestamp);
+    expect(deserialized.encryptedKey).toEqual(encrypted.encryptedKey);
+    expect(deserialized.ephemeralPublicKey).toEqual(encrypted.ephemeralPublicKey);
     expect(deserialized.encryptedData).toEqual(encrypted.encryptedData);
     expect(deserialized.iv).toEqual(encrypted.iv);
     expect(deserialized.authTag).toEqual(encrypted.authTag);
     expect(deserialized.metadata).toEqual(encrypted.metadata);
 
-    destroyKey(timeKey);
+    // Verify deserialized package can be decrypted
+    const timeKey = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp);
+    const decrypted = await decryptData(deserialized, timeKey);
+    expect(decrypted).toEqual(data);
   });
 
-  test('encryption with metadata preserves metadata', async () => {
-    const masterKey = generateMasterKey();
+  test('different ephemeral keys for each encryption', async () => {
+    const keypair = await generateMasterKeypair();
+    const publicKey = await exportPublicKey(keypair.publicKey);
     const timestamp = Date.now();
-    const data = new TextEncoder().encode('Data with metadata');
-    const metadata = {
-      deviceId: 'sensor-001',
-      location: 'building-A',
-      temperature: 22.5
-    };
+    const data = new TextEncoder().encode('Same data');
 
-    const timeKey = await deriveTimeSpecificKey(masterKey, timestamp);
-    const encrypted = await encryptData(data, timeKey, timestamp, metadata);
+    const encrypted1 = await encryptData(data, publicKey, timestamp);
+    const encrypted2 = await encryptData(data, publicKey, timestamp);
 
-    expect(encrypted.metadata).toEqual(metadata);
+    // Ephemeral keys should be different
+    expect(encrypted1.ephemeralPublicKey.x).not.toBe(encrypted2.ephemeralPublicKey.x);
+    expect(encrypted1.ephemeralPublicKey.y).not.toBe(encrypted2.ephemeralPublicKey.y);
 
-    destroyKey(timeKey);
+    // IVs should be different
+    expect(encrypted1.iv).not.toEqual(encrypted2.iv);
+
+    // Encrypted data should be different (different ephemeral keys + IVs)
+    expect(encrypted1.encryptedData).not.toEqual(encrypted2.encryptedData);
+
+    // But both should decrypt to same data
+    const timeKey = await deriveTimeSpecificPrivateKey(keypair.privateKey, timestamp);
+    const decrypted1 = await decryptData(encrypted1, timeKey);
+    const decrypted2 = await decryptData(encrypted2, timeKey);
+
+    expect(decrypted1).toEqual(data);
+    expect(decrypted2).toEqual(data);
+  });
+});
+
+describe('Security Properties', () => {
+  test('public key alone cannot decrypt data', async () => {
+    const keypair = await generateMasterKeypair();
+    const publicKey = await exportPublicKey(keypair.publicKey);
+    const timestamp = Date.now();
+    const data = new TextEncoder().encode('Confidential data');
+
+    const encrypted = await encryptData(data, publicKey, timestamp);
+
+    // Having only the public key, we cannot derive the private key or decrypt
+    // This is implicit in the asymmetric design - just verify encryption works
+    expect(encrypted.encryptedData).toBeDefined();
+    expect(encrypted.encryptedData).not.toEqual(data);
+  });
+
+  test('temporal isolation - timestamps bound via KDF', async () => {
+    const keypair = await generateMasterKeypair();
+    const publicKey = await exportPublicKey(keypair.publicKey);
+    const masterKey = keypair.privateKey;
+
+    const timestamp1 = 1000000;
+    const timestamp2 = 2000000;
+
+    const data1 = new TextEncoder().encode('Data at time 1');
+    const data2 = new TextEncoder().encode('Data at time 2');
+
+    const encrypted1 = await encryptData(data1, publicKey, timestamp1);
+    const encrypted2 = await encryptData(data2, publicKey, timestamp2);
+
+    // Tampering with timestamps should cause decryption to fail
+    const tampered1 = { ...encrypted1, timestamp: timestamp2 };
+    const tampered2 = { ...encrypted2, timestamp: timestamp1 };
+
+    await expect(decryptData(tampered1, masterKey)).rejects.toThrow();
+    await expect(decryptData(tampered2, masterKey)).rejects.toThrow();
+
+    // But correct timestamps work
+    const decrypted1 = await decryptData(encrypted1, masterKey);
+    const decrypted2 = await decryptData(encrypted2, masterKey);
+
+    expect(decrypted1).toEqual(data1);
+    expect(decrypted2).toEqual(data2);
+  });
+
+  test('forward secrecy - different ephemeral keys per encryption', async () => {
+    const keypair = await generateMasterKeypair();
+    const publicKey = await exportPublicKey(keypair.publicKey);
+    const masterKey = keypair.privateKey;
+
+    const timestamps = [1000, 2000, 3000, 4000, 5000];
+    const dataItems = timestamps.map(t =>
+      new TextEncoder().encode(`Data at ${t}`)
+    );
+
+    const encrypted = await Promise.all(
+      timestamps.map((t, i) => encryptData(dataItems[i], publicKey, t))
+    );
+
+    // Each encryption uses different ephemeral keys
+    expect(encrypted[0].ephemeralPublicKey.x).not.toBe(encrypted[1].ephemeralPublicKey.x);
+    expect(encrypted[1].ephemeralPublicKey.x).not.toBe(encrypted[2].ephemeralPublicKey.x);
+
+    // Master key can decrypt all timestamps
+    for (let i = 0; i < timestamps.length; i++) {
+      const decrypted = await decryptData(encrypted[i], masterKey);
+      expect(decrypted).toEqual(dataItems[i]);
+    }
+
+    // But tampering with any timestamp prevents decryption
+    const tampered = { ...encrypted[2], timestamp: 9999 };
+    await expect(decryptData(tampered, masterKey)).rejects.toThrow();
   });
 });

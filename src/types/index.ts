@@ -1,17 +1,31 @@
 /**
- * Type definitions for ChronoCrypt - Time-Based Granular Data Encryption System
+ * Type definitions for ChronoCrypt - Asymmetric Time-Based Encryption
+ *
+ * Security Model:
+ * - DataSource (untrusted): Has PUBLIC key only - can encrypt, cannot decrypt
+ * - KeyHolder (trusted): Has PRIVATE key - derives time-specific private keys
+ * - DataViewer: Gets time-specific private keys from KeyHolder
  */
 
 /**
- * Master key used for deriving time-specific encryption keys
- * Must be 256-bit (32 bytes) for cryptographic security
+ * Master keypair for time-based encryption
  */
-export type MasterKey = Uint8Array;
+export interface MasterKeypair {
+  /** Private key (kept secret by KeyHolder only) */
+  privateKey: CryptoKey;
+  /** Public key (given to untrusted DataSource) */
+  publicKey: CryptoKey;
+}
 
 /**
- * Time-specific encryption key derived from master key and timestamp
+ * Exportable master public key (JWK format)
  */
-export type TimeSpecificKey = Uint8Array;
+export type ExportedPublicKey = JsonWebKey;
+
+/**
+ * Time-specific private key for decryption
+ */
+export type TimeSpecificPrivateKey = CryptoKey;
 
 /**
  * Timestamp representation - Unix epoch in milliseconds
@@ -19,27 +33,25 @@ export type TimeSpecificKey = Uint8Array;
 export type Timestamp = number;
 
 /**
- * Initialization Vector for AES-CBC encryption (128-bit / 16 bytes)
- */
-export type IV = Uint8Array;
-
-/**
- * HMAC authentication tag for data integrity verification
- */
-export type AuthenticationTag = Uint8Array;
-
-/**
- * Encrypted data payload
+ * Encrypted data package using hybrid encryption
+ *
+ * Structure:
+ * - Symmetric key K encrypted with time-based public key (ECIES)
+ * - Data encrypted with symmetric key K (AES-256-GCM)
  */
 export interface EncryptedPackage {
   /** Timestamp when data was encrypted */
   timestamp: Timestamp;
-  /** Encrypted data payload */
+  /** Encrypted symmetric key (ECIES encrypted) */
+  encryptedKey: Uint8Array;
+  /** Ephemeral public key used for ECDH key agreement */
+  ephemeralPublicKey: JsonWebKey;
+  /** Encrypted data payload (AES-256-GCM) */
   encryptedData: Uint8Array;
-  /** Initialization vector used for encryption */
-  iv: IV;
-  /** HMAC authentication tag */
-  authTag: AuthenticationTag;
+  /** Initialization vector for AES-GCM */
+  iv: Uint8Array;
+  /** Authentication tag from AES-GCM */
+  authTag: Uint8Array;
   /** Optional application-specific metadata */
   metadata?: Record<string, unknown>;
 }
@@ -81,13 +93,13 @@ export interface AccessRequest {
 }
 
 /**
- * Access authorization response
+ * Access authorization response with time-specific private keys
  */
 export interface AccessResponse {
   /** Whether access was granted */
   granted: boolean;
-  /** Time-specific keys for authorized time periods */
-  keys?: Map<Timestamp, TimeSpecificKey>;
+  /** Time-specific private keys for authorized time periods */
+  privateKeys?: Map<Timestamp, TimeSpecificPrivateKey>;
   /** Reason for denial if not granted */
   denialReason?: string;
   /** Authorization metadata */
@@ -136,8 +148,8 @@ export interface AccessControlPolicy {
  * Configuration options for Data Source Entity
  */
 export interface DataSourceConfig {
-  /** Master key for encryption */
-  masterKey: MasterKey;
+  /** Master PUBLIC key for encryption (DataSource never sees private key) */
+  publicKey: ExportedPublicKey;
   /** Optional custom timestamp generator */
   timestampGenerator?: () => Timestamp;
 }
@@ -146,8 +158,8 @@ export interface DataSourceConfig {
  * Configuration options for Key Holder Entity
  */
 export interface KeyHolderConfig {
-  /** Master key for key derivation */
-  masterKey: MasterKey;
+  /** Master keypair (private key for deriving time-specific keys) */
+  masterKeypair: MasterKeypair;
   /** Access control policies */
   policies?: AccessControlPolicy[];
 }
