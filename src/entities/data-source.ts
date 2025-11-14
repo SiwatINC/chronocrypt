@@ -4,15 +4,15 @@
  * Encrypts temporal data streams using time-derived cryptographic keys
  */
 
-import { deriveTimeSpecificKey, destroyKey } from '~/crypto/key-derivation';
-import { encryptData } from '~/crypto/encryption';
+import { deriveTimeSpecificKey, destroyKey } from '../crypto/key-derivation';
+import { encryptData } from '../crypto/encryption';
 import {
   DataSourceConfig,
   EncryptedPackage,
   EncryptedDataRepository,
   Timestamp,
   MasterKey
-} from '~/types';
+} from '../types';
 
 /**
  * Data Source Entity - Primary Function: Encrypts temporal data streams

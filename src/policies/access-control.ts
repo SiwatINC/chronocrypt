@@ -4,7 +4,7 @@
  * Provides flexible policy-based access control for time-based encryption
  */
 
-import { AccessControlPolicy, AccessRequest, TimeRange } from '~/types';
+import { AccessControlPolicy, AccessRequest, TimeRange } from '../types';
 
 /**
  * Policy evaluation result

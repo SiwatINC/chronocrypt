@@ -13,7 +13,7 @@ import {
   EncryptionError,
   DecryptionError,
   AuthenticationError
-} from '~/types';
+} from '../types';
 
 /**
  * IV size for AES-CBC (128-bit / 16 bytes)
@@ -51,7 +51,7 @@ async function importKey(
 ): Promise<CryptoKey> {
   return await crypto.subtle.importKey(
     'raw',
-    keyBytes,
+    keyBytes as BufferSource,
     { name: algorithm },
     false, // not extractable
     usages
@@ -108,13 +108,13 @@ async function deriveEncryptionAndAuthKeys(timeSpecificKey: TimeSpecificKey): Pr
 async function computeHMAC(authKey: Uint8Array, data: Uint8Array): Promise<AuthenticationTag> {
   const key = await crypto.subtle.importKey(
     'raw',
-    authKey,
+    authKey as BufferSource,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']
   );
 
-  const signature = await crypto.subtle.sign('HMAC', key, data);
+  const signature = await crypto.subtle.sign('HMAC', key, data as BufferSource);
   return new Uint8Array(signature);
 }
 
@@ -133,13 +133,13 @@ async function verifyHMAC(
 ): Promise<boolean> {
   const key = await crypto.subtle.importKey(
     'raw',
-    authKey,
+    authKey as BufferSource,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['verify']
   );
 
-  return await crypto.subtle.verify('HMAC', key, tag, data);
+  return await crypto.subtle.verify('HMAC', key, tag as BufferSource, data as BufferSource);
 }
 
 /**
@@ -167,9 +167,9 @@ export async function encryptData(
 
     // Encrypt data using AES-256-CBC
     const encryptedBuffer = await crypto.subtle.encrypt(
-      { name: 'AES-CBC', iv },
+      { name: 'AES-CBC', iv: iv as BufferSource },
       encryptionKey,
-      data
+      data as BufferSource
     );
     const encryptedData = new Uint8Array(encryptedBuffer);
 
@@ -249,9 +249,9 @@ export async function decryptData(
 
     // Decrypt data using AES-256-CBC
     const decryptedBuffer = await crypto.subtle.decrypt(
-      { name: 'AES-CBC', iv: pkg.iv },
+      { name: 'AES-CBC', iv: pkg.iv as BufferSource },
       encryptionKey,
-      pkg.encryptedData
+      pkg.encryptedData as BufferSource
     );
 
     return new Uint8Array(decryptedBuffer);

@@ -4,9 +4,9 @@
  * Decrypts authorized data using time-specific keys received from key holder entities
  */
 
-import { decryptData, verifyAuthentication } from '~/crypto/encryption';
-import { destroyKey } from '~/crypto/key-derivation';
-import { createAuditEntry } from '~/storage/audit-log';
+import { decryptData, verifyAuthentication } from '../crypto/encryption';
+import { destroyKey } from '../crypto/key-derivation';
+import { createAuditEntry } from '../storage/audit-log';
 import {
   DataViewerConfig,
   EncryptedPackage,
@@ -18,7 +18,7 @@ import {
   AuditLogStorage,
   DecryptionError,
   AuthenticationError
-} from '~/types';
+} from '../types';
 
 /**
  * Data Viewer Entity - Primary Function: Decrypts authorized data

@@ -9,7 +9,7 @@ import {
   EncryptedDataRepository,
   Timestamp,
   TimeRange
-} from '~/types';
+} from '../types';
 
 /**
  * In-memory implementation of encrypted data repository

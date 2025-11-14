@@ -11,7 +11,7 @@ import {
   Timestamp,
   KeyDerivationError,
   InvalidKeyError
-} from '~/types';
+} from '../types';
 
 /**
  * Master key size in bytes (256-bit)

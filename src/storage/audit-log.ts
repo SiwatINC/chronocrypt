@@ -4,7 +4,7 @@
  * Stores audit log entries for access control and key management operations
  */
 
-import { AuditLogEntry, AuditLogStorage, TimeRange, Timestamp } from '~/types';
+import { AuditLogEntry, AuditLogStorage, TimeRange, Timestamp } from '../types';
 
 /**
  * In-memory implementation of audit log storage

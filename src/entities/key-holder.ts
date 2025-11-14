@@ -5,9 +5,9 @@
  * for authorized time periods
  */
 
-import { deriveTimeSpecificKey, deriveMultipleKeys } from '~/crypto/key-derivation';
-import { AccessControlPolicyManager } from '~/policies/access-control';
-import { createAuditEntry } from '~/storage/audit-log';
+import { deriveTimeSpecificKey, deriveMultipleKeys } from '../crypto/key-derivation';
+import { AccessControlPolicyManager } from '../policies/access-control';
+import { createAuditEntry } from '../storage/audit-log';
 import {
   KeyHolderConfig,
   AccessRequest,
@@ -18,7 +18,7 @@ import {
   Timestamp,
   TimeRange,
   AccessDeniedError
-} from '~/types';
+} from '../types';
 
 /**
  * Key Holder Entity - Primary Function: Controls access authorization

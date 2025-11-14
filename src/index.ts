@@ -7,7 +7,7 @@
  */
 
 // Export all type definitions
-export * from '~/types';
+export * from './types';
 
 // Export cryptographic primitives
 export {
@@ -22,7 +22,7 @@ export {
   exportMasterKeyToBase64,
   MASTER_KEY_SIZE,
   DERIVED_KEY_SIZE
-} from '~/crypto/key-derivation';
+} from './crypto/key-derivation';
 
 export {
   encryptData,
@@ -33,25 +33,25 @@ export {
   deserializeEncryptedPackage,
   IV_SIZE,
   AUTH_TAG_SIZE
-} from '~/crypto/encryption';
+} from './crypto/encryption';
 
 // Export entities
-export { DataSource, createDataSource } from '~/entities/data-source';
-export { KeyHolder, createKeyHolder } from '~/entities/key-holder';
-export { DataViewer, createDataViewer } from '~/entities/data-viewer';
+export { DataSource, createDataSource } from './entities/data-source';
+export { KeyHolder, createKeyHolder } from './entities/key-holder';
+export { DataViewer, createDataViewer } from './entities/data-viewer';
 
 // Export storage implementations
 export {
   InMemoryEncryptedRepository,
   FileSystemEncryptedRepository
-} from '~/storage/encrypted-repository';
+} from './storage/encrypted-repository';
 
 export {
   InMemoryAuditLog,
   FileBasedAuditLog,
   generateAuditEntryId,
   createAuditEntry
-} from '~/storage/audit-log';
+} from './storage/audit-log';
 
 // Export access control policies
 export {
@@ -67,6 +67,6 @@ export {
   createBusinessHoursPolicy,
   createCompositeAndPolicy,
   createCompositeOrPolicy
-} from '~/policies/access-control';
+} from './policies/access-control';
 
-export type { PolicyEvaluationResult } from '~/policies/access-control';
+export type { PolicyEvaluationResult } from './policies/access-control';
