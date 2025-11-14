@@ -17,6 +17,7 @@ A cryptographic library for temporal data access control with zero-knowledge aut
 - **Authenticated Encryption**: AES-256-CBC with HMAC-SHA256 authentication
 - **Flexible Policy System**: Extensible access control policies
 - **Comprehensive Audit Logging**: Full audit trail of all access authorization activities
+- **Pluggable Storage**: Use in-memory, filesystem, or any database (Prisma examples included)
 
 ## Installation
 
@@ -59,6 +60,59 @@ const authResponse = await keyHolder.authorizeAccess({
 const dataViewer = createDataViewer('analyst-001', auditLog);
 dataViewer.loadAuthorizedKeys(authResponse.keys!);
 const decrypted = await dataViewer.decryptFromRepository(repository, encrypted.timestamp);
+```
+
+## Storage Options
+
+ChronoCrypt provides flexible storage through simple interfaces. Choose the storage backend that fits your needs:
+
+### Built-in Storage
+
+**In-Memory** (included) - Perfect for testing and development:
+```typescript
+import { InMemoryEncryptedRepository, InMemoryAuditLog } from '@siwats/chronocrypt';
+
+const repository = new InMemoryEncryptedRepository();
+const auditLog = new InMemoryAuditLog();
+```
+
+**File System** (included) - Simple persistent storage:
+```typescript
+import { FileSystemEncryptedRepository, FileBasedAuditLog } from '@siwats/chronocrypt';
+
+const repository = new FileSystemEncryptedRepository('./data');
+const auditLog = new FileBasedAuditLog('./audit.log');
+```
+
+### Database Storage
+
+**Prisma (PostgreSQL/SQLite)** - Production-ready database storage:
+
+See [`examples/prisma/PRISMA_SETUP.md`](examples/prisma/PRISMA_SETUP.md) for complete setup guide.
+
+```typescript
+import { PrismaClient } from '@prisma/client';
+import { createPrismaRepository } from './storage/prisma-encrypted-repository';
+import { createPrismaAuditLog } from './storage/prisma-audit-log';
+
+const prisma = new PrismaClient();
+const repository = createPrismaRepository(prisma);
+const auditLog = createPrismaAuditLog(prisma);
+```
+
+### Custom Storage
+
+Implement your own storage by following the interfaces:
+
+```typescript
+import type { EncryptedDataRepository, AuditLogStorage } from '@siwats/chronocrypt';
+
+class MyCustomRepository implements EncryptedDataRepository {
+  async store(pkg: EncryptedPackage): Promise<void> { /* ... */ }
+  async retrieve(timestamp: Timestamp): Promise<EncryptedPackage | null> { /* ... */ }
+  async retrieveRange(range: TimeRange): Promise<EncryptedPackage[]> { /* ... */ }
+  async exists(timestamp: Timestamp): Promise<boolean> { /* ... */ }
+}
 ```
 
 ## Testing

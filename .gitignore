@@ -34,3 +34,8 @@ coverage/
 # Temporary files
 *.tmp
 .temp/
+
+# Prisma
+examples/prisma/migrations/
+examples/prisma/*.db
+examples/prisma/*.db-journal
