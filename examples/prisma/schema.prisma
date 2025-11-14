@@ -1,0 +1,52 @@
+// ChronoCrypt Prisma Schema
+// Supports PostgreSQL and SQLite
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql" // Change to "sqlite" for SQLite
+  url      = env("DATABASE_URL")
+}
+
+/// Encrypted data package stored in repository
+model EncryptedPackage {
+  id            String   @id @default(cuid())
+  timestamp     BigInt   @unique // Unix epoch in milliseconds
+  encryptedData Bytes    // Encrypted payload
+  iv            Bytes    // Initialization vector
+  authTag       Bytes    // HMAC authentication tag
+  metadata      Json?    // Optional metadata
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([timestamp])
+  @@map("encrypted_packages")
+}
+
+/// Audit log entry for access control operations
+model AuditLogEntry {
+  id        String   @id @default(cuid())
+  entryId   String   @unique // Application-level unique ID
+  timestamp BigInt   // Unix epoch in milliseconds when event occurred
+  eventType String   // Type of event (KEY_GENERATION, ACCESS_REQUEST, etc.)
+  actor     String   // Entity that initiated the action
+  target    String?  // Target entity or resource
+  success   Boolean  // Whether the action was successful
+
+  // Time range involved (nullable for events without time ranges)
+  rangeStartTime BigInt?
+  rangeEndTime   BigInt?
+
+  // Additional details stored as JSON
+  details   Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([timestamp])
+  @@index([eventType])
+  @@index([actor])
+  @@index([entryId])
+  @@map("audit_log_entries")
+}

@@ -1,0 +1,56 @@
+{
+  "name": "@siwats/chronocrypt",
+  "version": "1.0.0",
+  "description": "Time-Based Granular Data Encryption System - A cryptographic library for temporal data access control",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "bun test",
+    "lint": "eslint src/**/*.ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": [
+    "encryption",
+    "temporal",
+    "time-based",
+    "access-control",
+    "cryptography",
+    "aes",
+    "granular-encryption",
+    "zero-knowledge"
+  ],
+  "author": "Siwat Sirichai",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SiwatINC/chronocrypt.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SiwatINC/chronocrypt/issues"
+  },
+  "homepage": "https://github.com/SiwatINC/chronocrypt#readme",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.3.3"
+  },
+  "peerDependencies": {
+    "bun": ">=1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

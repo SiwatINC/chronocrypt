@@ -1,0 +1,34 @@
+# Source files (only publish dist/)
+src/
+tests/
+examples/
+
+# Configuration files
+tsconfig.json
+.gitignore
+.npmignore
+
+# Development files
+*.log
+*.tmp
+.DS_Store
+.vscode/
+.idea/
+
+# Test and coverage
+coverage/
+.nyc_output/
+
+# Git
+.git/
+.gitattributes
+
+# Build artifacts to exclude
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.*
+
+# Documentation that's not needed in npm
+PUBLISHING.md

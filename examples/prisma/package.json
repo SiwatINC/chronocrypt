@@ -1,0 +1,19 @@
+{
+  "name": "chronocrypt-prisma-example",
+  "version": "1.0.0",
+  "description": "Example showing how to use Prisma with ChronoCrypt",
+  "type": "module",
+  "scripts": {
+    "setup": "bunx prisma generate && bunx prisma migrate dev --name init",
+    "dev": "bun run prisma-example.ts",
+    "studio": "bunx prisma studio",
+    "reset": "bunx prisma migrate reset"
+  },
+  "dependencies": {
+    "@siwats/chronocrypt": "^1.0.0",
+    "@prisma/client": "^5.7.1"
+  },
+  "devDependencies": {
+    "prisma": "^5.7.1"
+  }
+}
